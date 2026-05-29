@@ -2,6 +2,7 @@ import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { auth } from './firebase';
 import { signInWithPopup, GoogleAuthProvider, onAuthStateChanged, User, signOut, createUserWithEmailAndPassword, signInWithEmailAndPassword, sendPasswordResetEmail, updateProfile } from 'firebase/auth';
 import { supabase, handleDbError } from './lib/supabase';
+import type { RealtimeChannel } from '@supabase/supabase-js';
 import { GoogleGenAI, LiveServerMessage, Modality, Type, FunctionDeclaration } from '@google/genai';
 import { AmbientConversationBed, AudioRecorder, AudioStreamer } from './lib/audio';
 import { listKnowledgeFiles, fetchKnowledgeFileContent } from './lib/supabaseStorage';
@@ -1660,8 +1661,9 @@ function MaximusAgent({
   }, [isActive]);
 
   useEffect(() => {
-    let unsubMessages: (() => void) | null = null;
-    let unsubSettings: (() => void) | null = null;
+    let cancelled = false;
+    const msgChanRef: { current: RealtimeChannel | null } = { current: null };
+    const setChanRef: { current: RealtimeChannel | null } = { current: null };
 
     (async () => {
       const { data: initialMessages, error: loadError } = await supabase
@@ -1670,8 +1672,8 @@ function MaximusAgent({
         .eq('user_id', user.uid)
         .order('created_at', { ascending: false });
 
-      if (loadError) {
-        handleDbError(loadError, 'messages', 'list');
+      if (loadError || cancelled) {
+        if (loadError) handleDbError(loadError, 'messages', 'list');
         return;
       }
 
@@ -1688,7 +1690,7 @@ function MaximusAgent({
         });
       });
 
-      setMessages(messageList);
+      if (!cancelled) setMessages(messageList);
 
       if (msgs.length > 0) {
         let context = "Previous conversation for context memory:\n" + msgs.join("\n");
@@ -1725,74 +1727,82 @@ function MaximusAgent({
           context += "\nCheck if these were completed. If not, work on them now via the sandbox.";
         }
 
-        setHistoryContext(context);
-        historyContextRef.current = context;
+        if (!cancelled) {
+          setHistoryContext(context);
+          historyContextRef.current = context;
+        }
       } else {
-        setHistoryContext("");
-        historyContextRef.current = "";
+        if (!cancelled) {
+          setHistoryContext("");
+          historyContextRef.current = "";
+        }
       }
 
-      if (messageList.length > 0 && !selectedSessionId) {
+      if (!cancelled && messageList.length > 0 && !selectedSessionId) {
         const newest = [...messageList].reverse().find(m => m.sessionId);
         if (newest?.sessionId) setSelectedSessionId(newest.sessionId);
       }
 
-      const messagesChannel = supabase
-        .channel('messages_changes')
-        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `user_id=eq.${user.uid}` }, (payload) => {
-          const m = payload.new as any;
-          if (!m || !m.text) return;
-          const msg: ChatMessage = {
-            role: m.role,
-            text: m.text,
-            sessionId: m.session_id,
-            timestamp: m.created_at,
-          };
-          setMessages(prev => {
-            if (prev.some(p => p.timestamp === m.created_at && p.text === m.text)) return prev;
-            return [...prev, msg];
-          });
-        })
-        .subscribe();
-
-      unsubMessages = () => { supabase.removeChannel(messagesChannel); };
-
-      const { data: settingsData, error: settingsError } = await supabase
-        .from('user_settings')
-        .select('*')
-        .eq('user_id', user.uid)
-        .single();
-
-      if (!settingsError && settingsData) {
-        if (settingsData.persona_name) setPersonaName(settingsData.persona_name);
-        if (settingsData.custom_prompt !== null) setCustomPrompt(settingsData.custom_prompt);
-        if (settingsData.selected_voice) setSelectedVoice(settingsData.selected_voice);
-        if (settingsData.context_size !== undefined) setContextSize(settingsData.context_size);
-        if (settingsData.user_title) { setUserTitle(settingsData.user_title); try { localStorage.setItem('beatrice_userTitle', settingsData.user_title); } catch {} }
-        if (settingsData.language) { onSetLanguage(settingsData.language); try { localStorage.setItem('beatrice_language', settingsData.language); } catch {} }
-        if (settingsData.whatsapp_permissions) setWaPermissions(prev => ({ ...prev, ...settingsData.whatsapp_permissions }));
-        if (settingsData.whatsapp_paired) setWaStatus('paired');
-        if (settingsData.whatsapp_phone) setWaPhone(settingsData.whatsapp_phone);
+      if (!cancelled) {
+        const messagesChannel = supabase
+          .channel('messages_changes')
+          .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `user_id=eq.${user.uid}` }, (payload) => {
+            const m = payload.new as any;
+            if (!m || !m.text) return;
+            const msg: ChatMessage = {
+              role: m.role,
+              text: m.text,
+              sessionId: m.session_id,
+              timestamp: m.created_at,
+            };
+            setMessages(prev => {
+              if (prev.some(p => p.timestamp === m.created_at && p.text === m.text)) return prev;
+              return [...prev, msg];
+            });
+          })
+          .subscribe();
+        msgChanRef.current = messagesChannel;
       }
 
-      const settingsChannel = supabase
-        .channel('settings_changes')
-        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'user_settings', filter: `user_id=eq.${user.uid}` }, (payload) => {
-          const s = payload.new as any;
-          if (!s) return;
-          if (s.persona_name) setPersonaName(s.persona_name);
-          if (s.custom_prompt !== null) setCustomPrompt(s.custom_prompt);
-          if (s.selected_voice) setSelectedVoice(s.selected_voice);
-          if (s.context_size !== undefined) setContextSize(s.context_size);
-          if (s.user_title) { setUserTitle(s.user_title); try { localStorage.setItem('beatrice_userTitle', s.user_title); } catch {} }
-          if (s.language) { onSetLanguage(s.language); try { localStorage.setItem('beatrice_language', s.language); } catch {} }
-          if (s.whatsapp_permissions) setWaPermissions(prev => ({ ...prev, ...s.whatsapp_permissions }));
-          if (s.whatsapp_paired) setWaStatus('paired');
-          if (s.whatsapp_phone) setWaPhone(s.whatsapp_phone);
-        })
-        .subscribe();
+      if (!cancelled) {
+        const { data: settingsData, error: settingsError } = await supabase
+          .from('user_settings')
+          .select('*')
+          .eq('user_id', user.uid)
+          .single();
 
-      unsubSettings = () => { supabase.removeChannel(settingsChannel); };
+        if (!settingsError && settingsData) {
+          if (settingsData.persona_name) setPersonaName(settingsData.persona_name);
+          if (settingsData.custom_prompt !== null) setCustomPrompt(settingsData.custom_prompt);
+          if (settingsData.selected_voice) setSelectedVoice(settingsData.selected_voice);
+          if (settingsData.context_size !== undefined) setContextSize(settingsData.context_size);
+          if (settingsData.user_title) { setUserTitle(settingsData.user_title); try { localStorage.setItem('beatrice_userTitle', settingsData.user_title); } catch {} }
+          if (settingsData.language) { onSetLanguage(settingsData.language); try { localStorage.setItem('beatrice_language', settingsData.language); } catch {} }
+          if (settingsData.whatsapp_permissions) setWaPermissions(prev => ({ ...prev, ...settingsData.whatsapp_permissions }));
+          if (settingsData.whatsapp_paired) setWaStatus('paired');
+          if (settingsData.whatsapp_phone) setWaPhone(settingsData.whatsapp_phone);
+        }
+      }
+
+      if (!cancelled) {
+        const settingsChannel = supabase
+          .channel('settings_changes')
+          .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'user_settings', filter: `user_id=eq.${user.uid}` }, (payload) => {
+            const s = payload.new as any;
+            if (!s) return;
+            if (s.persona_name) setPersonaName(s.persona_name);
+            if (s.custom_prompt !== null) setCustomPrompt(s.custom_prompt);
+            if (s.selected_voice) setSelectedVoice(s.selected_voice);
+            if (s.context_size !== undefined) setContextSize(s.context_size);
+            if (s.user_title) { setUserTitle(s.user_title); try { localStorage.setItem('beatrice_userTitle', s.user_title); } catch {} }
+            if (s.language) { onSetLanguage(s.language); try { localStorage.setItem('beatrice_language', s.language); } catch {} }
+            if (s.whatsapp_permissions) setWaPermissions(prev => ({ ...prev, ...s.whatsapp_permissions }));
+            if (s.whatsapp_paired) setWaStatus('paired');
+            if (s.whatsapp_phone) setWaPhone(s.whatsapp_phone);
+          })
+          .subscribe();
+        setChanRef.current = settingsChannel;
+      }
     })();
 
     const apiKey = getGeminiApiKey();
@@ -1804,8 +1814,9 @@ function MaximusAgent({
     audioStreamerRef.current = new AudioStreamer();
 
     return () => {
-      if (unsubMessages) unsubMessages();
-      if (unsubSettings) unsubSettings();
+      cancelled = true;
+      if (msgChanRef.current) { supabase.removeChannel(msgChanRef.current); msgChanRef.current = null; }
+      if (setChanRef.current) { supabase.removeChannel(setChanRef.current); setChanRef.current = null; }
       stopSession();
     };
   }, [user.uid, contextSize]);

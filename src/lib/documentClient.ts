@@ -18,14 +18,9 @@ export async function streamDocumentFromVps(
   args: { title: string; content: string }, 
   onChunk: (chunk: string) => void
 ) {
-  const OLLAMA_API_KEY = process.env.OLLAMA_API_KEY;
-  
-  const response = await fetch('https://ollama.com/api/chat', {
+  const response = await fetch(`${getBackendUrl()}/api/ollama/chat`, {
     method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${OLLAMA_API_KEY}`,
-      'Content-Type': 'application/json',
-    },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       model: process.env.MODEL || 'gpt-oss:120b',
       messages: [{

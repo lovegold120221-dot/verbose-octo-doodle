@@ -52,6 +52,58 @@ app.get('/api/ollama/status', async (_req, res) => {
   }
 });
 
+app.post('/api/ollama/chat', async (req, res) => {
+  try {
+    const OLLAMA_CLOUD_URL = process.env.OLLAMA_CLOUD_URL || 'https://ollama.com/api/chat';
+    const OLLAMA_CLOUD_KEY = process.env.OLLAMA_API_KEY;
+    if (!OLLAMA_CLOUD_KEY) {
+      res.status(500).json({ error: 'OLLAMA_API_KEY not configured on server' });
+      return;
+    }
+    const { model, messages, stream } = req.body || {};
+    if (!model || !messages) {
+      res.status(400).json({ error: 'model and messages required' });
+      return;
+    }
+
+    const response = await fetch(OLLAMA_CLOUD_URL, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${OLLAMA_CLOUD_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ model, messages, stream }),
+    });
+
+    if (!response.ok) {
+      const errText = await response.text().catch(() => '');
+      res.status(502).json({ error: `Ollama cloud error: ${response.status} ${errText}` });
+      return;
+    }
+
+    if (stream) {
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+      const reader = response.body?.getReader();
+      if (!reader) { res.end(); return; }
+      const decoder = new TextDecoder();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        res.write(decoder.decode(value, { stream: true }));
+      }
+      res.end();
+    } else {
+      const data = await response.json();
+      res.json(data);
+    }
+  } catch (err: any) {
+    console.error('Ollama proxy error:', err);
+    res.status(500).json({ error: err.message || 'Ollama proxy failed' });
+  }
+});
+
 app.post('/api/web/glance', async (req, res) => {
   try {
     const query = typeof req.body?.query === 'string' ? req.body.query.trim() : '';
