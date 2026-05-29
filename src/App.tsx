@@ -2456,17 +2456,18 @@ ${historyContext}
                         const args = call.args as any;
                         setIsGenerating(true);
                         try {
-                          const { streamDocumentFromVps } = await import('./lib/documentClient');
+                          const { generateArtifact, pollArtifactTask } = await import('./lib/artifactClient');
                           const title = args.title || 'Document';
                           const prompt = args.prompt || args.content || 'Create a professional document.';
-                          
-                          const taskId = crypto.randomUUID();
+
+                          const { taskId } = await generateArtifact(user.uid, { title, prompt });
+
                           setComputerTask({
                             id: taskId,
                             type: 'webpage',
                             label: title,
                             status: 'working',
-                            steps: [{ key: 'generating', label: 'Generating document via Ollama...', done: false, active: true }],
+                            steps: [{ key: 'generating', label: 'Generating document...', done: false, active: true }],
                             output: { type: 'webpage', title, content: '', fileType: 'html' },
                             createdAt: Date.now(),
                           });
@@ -2474,21 +2475,28 @@ ${historyContext}
                           setShowComputerPage(true);
                           setIsGenerating(false);
 
+                          const resultData = await pollArtifactTask(taskId, (status) => {
+                            if (status.output?.content) {
+                              setComputerOutput(prev => prev ? { ...prev, content: status.output!.content } : { content: status.output!.content, title });
+                            }
+                          });
 
-                         const finalContent = await streamDocumentFromVps(user.uid, { title, content: prompt }, (chunk) => {
-                           setComputerOutput(prev => prev ? { ...prev, content: (prev.content || '') + chunk } : { content: chunk, title });
-                         });
+                          if (resultData.status === 'error') {
+                            throw new Error(resultData.error || 'Generation failed');
+                          }
 
-                         setComputerTask(prev => {
-                           if (!prev) return null;
-                           return {
-                             ...prev,
-                             status: 'done',
-                             steps: [{ key: 'generating', label: 'Document generated', done: true, active: false }],
-                           };
-                         });
-                         
-                         result = { ok: true, title, content: finalContent };
+                          const finalContent = resultData.output?.content || '';
+                          setComputerTask(prev => {
+                            if (!prev) return null;
+                            return {
+                              ...prev,
+                              status: 'done',
+                              steps: [{ key: 'generating', label: 'Document generated', done: true, active: false }],
+                              output: { type: 'webpage', title, content: finalContent, fileType: 'html' },
+                            };
+                          });
+
+                          result = { ok: true, title, content: finalContent, taskId, previewUrl: resultData.previewUrl };
                         } catch (e: any) {
                           setIsGenerating(false);
                           setComputerTask(prev => {
@@ -2497,7 +2505,6 @@ ${historyContext}
                           });
                           result = { error: `Generation failed: ${e.message}` };
                         }
-
 
                       }
 

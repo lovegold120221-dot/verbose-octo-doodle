@@ -6,6 +6,7 @@ import fs from 'fs';
 import { randomBytes } from 'crypto';
 import { SandboxManager } from './sandbox';
 import { EburonWorker } from './eburon';
+import { DirectModelWorker } from './directModel';
 import { WhatsAppManager } from './whatsapp';
 import * as waTools from './whatsapp-tools';
 import { requireAdmin } from './middleware/adminAuth';
@@ -18,12 +19,16 @@ const SANDBOX_ROOT = process.env.SANDBOX_ROOT || '/var/eburon-ai/sandbox';
 const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'eburon-worker-cloud';
 const OLLAMA_FALLBACK = process.env.OLLAMA_FALLBACK || 'eburon-worker';
+const DIRECT_MODEL_API_URL = process.env.DIRECT_MODEL_API_URL || '';
+const DIRECT_MODEL_API_KEY = process.env.DIRECT_MODEL_API_KEY || '';
+const DIRECT_MODEL_NAME = process.env.DIRECT_MODEL_NAME || '';
 
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 
 const sandbox = new SandboxManager(SANDBOX_ROOT);
 const worker = new EburonWorker(OLLAMA_URL, OLLAMA_MODEL, OLLAMA_FALLBACK);
+const directModel = new DirectModelWorker({ apiUrl: DIRECT_MODEL_API_URL, apiKey: DIRECT_MODEL_API_KEY, modelName: DIRECT_MODEL_NAME });
 const waManager = new WhatsAppManager();
 
 app.use('/sandbox', express.static(SANDBOX_ROOT, {
@@ -39,8 +44,14 @@ app.use('/sandbox', express.static(SANDBOX_ROOT, {
 }));
 
 app.get('/api/health', async (_req, res) => {
-  const alive = await worker.checkConnection();
-  res.json({ status: 'ok', worker: 'connected', model: worker.modelName, ollama: alive, fallbackActive: worker.didFallback });
+  const ollamaAlive = await worker.checkConnection();
+  const directAlive = directModel.isConfigured ? await directModel.checkConnection() : false;
+  res.json({
+    status: 'ok',
+    worker: 'connected',
+    ollama: { connected: ollamaAlive, model: worker.modelName, fallbackActive: worker.didFallback },
+    directModel: { configured: directModel.isConfigured, connected: directAlive, model: directModel.modelName },
+  });
 });
 
 app.get('/api/ollama/status', async (_req, res) => {
@@ -235,6 +246,73 @@ app.post('/api/create-document', (req, res) => {
   } catch (err: any) {
     console.error('Document creation error:', err);
     res.status(500).json({ error: err.message || 'Document creation failed' });
+  }
+});
+
+app.post('/api/artifacts/generate', async (req, res) => {
+  try {
+    const { userId, title, prompt } = req.body || {};
+
+    if (!userId || typeof userId !== 'string') {
+      res.status(400).json({ error: 'userId required' });
+      return;
+    }
+
+    const safeTitle = typeof title === 'string' && title.trim() ? title.trim().slice(0, 160) : 'Document';
+    const safePrompt = typeof prompt === 'string' && prompt.trim() ? prompt.trim() : 'Create a professional document.';
+
+    if (!directModel.isConfigured) {
+      res.status(503).json({ error: 'Direct model not configured. Set DIRECT_MODEL_API_URL and DIRECT_MODEL_NAME.' });
+      return;
+    }
+
+    const directAlive = await directModel.checkConnection();
+    if (!directAlive) {
+      res.status(503).json({ error: 'Direct model endpoint not reachable.' });
+      return;
+    }
+
+    const taskId = sandbox.createTask('document', safeTitle, undefined, userId);
+    sandbox.updateStep(taskId, 'understanding', 'done');
+    sandbox.updateStep(taskId, 'preparing', 'done');
+    sandbox.updateStep(taskId, 'working', 'active');
+    sandbox.setTaskStatus(taskId, 'working');
+
+    res.json({
+      ok: true,
+      taskId,
+      status: 'working',
+      previewUrl: `/sandbox/tasks/${taskId}/output/`,
+    });
+
+    try {
+      const html = await directModel.generateArtifact(safeTitle, safePrompt);
+
+      sandbox.updateStep(taskId, 'working', 'done');
+      sandbox.updateStep(taskId, 'saving', 'active');
+      sandbox.setTaskStatus(taskId, 'reviewing');
+
+      const outputFile = sandbox.writeOutput(taskId, 'document', html, 'html');
+      sandbox.updateStep(taskId, 'saving', 'done');
+      sandbox.setTaskStatus(taskId, 'done');
+      sandbox.setTaskOutput(taskId, {
+        type: 'document',
+        title: safeTitle,
+        content: html,
+        fileType: 'html',
+      });
+      sandbox.finishTask(taskId, [outputFile]);
+    } catch (err: any) {
+      console.error('Artifact generation error:', err);
+      sandbox.setTaskStatus(taskId, 'error');
+      sandbox.setTaskError(taskId, err.message || 'Generation failed');
+      sandbox.markAllStepsDone(taskId);
+    }
+  } catch (err: any) {
+    console.error('Artifact route error:', err);
+    if (!res.headersSent) {
+      res.status(500).json({ error: err.message || 'Artifact generation failed' });
+    }
   }
 });
 
@@ -523,4 +601,6 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`Ollama URL: ${OLLAMA_URL}`);
   console.log(`Ollama Model: ${OLLAMA_MODEL}`);
   console.log(`Fallback Model: ${OLLAMA_FALLBACK || 'none'}`);
+  console.log(`Direct Model: ${DIRECT_MODEL_NAME || 'not configured'}`);
+  console.log(`Direct Model URL: ${DIRECT_MODEL_API_URL || 'not set'}`);
 });
