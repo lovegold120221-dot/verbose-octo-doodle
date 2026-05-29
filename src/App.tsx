@@ -2783,6 +2783,7 @@ ${historyContext}
             onClick={() => setShowSettings(true)}
             className="p-1.5 -ml-1.5 rounded-lg text-zinc-400 hover:text-[#d0a78b] hover:bg-zinc-800/50 transition-all duration-300"
             aria-label="Open Settings"
+            title="Open Settings"
           >
             <Settings className="w-5 h-5 sm:w-6 sm:h-6" />
           </button>
@@ -2798,6 +2799,7 @@ ${historyContext}
             onClick={() => setShowProfilePage(true)}
             className="w-7 h-7 sm:w-8 sm:h-8 rounded-full bg-zinc-900 border border-zinc-800 overflow-hidden flex items-center justify-center hover:border-[#d0a78b]/50 transition-all duration-300"
             aria-label="User Profile"
+            title="User Profile"
           >
             {user.photoURL ? (
               <img src={user.photoURL} alt="Profile" className="w-full h-full object-cover" />
@@ -3094,6 +3096,7 @@ ${historyContext}
                   onClick={() => setShowSettings(false)}
                   className="p-2 rounded-full hover:bg-white/5 text-gray-500"
                   aria-label="Close Settings"
+                  title="Close Settings"
                 >
                   <X className="w-5 h-5" />
                 </button>
@@ -3140,7 +3143,7 @@ ${historyContext}
                     </div>
                     <button
                       onClick={() => setAmbientEnabled(v => !v)}
-                      aria-pressed={ambientEnabled}
+                      aria-pressed={ambientEnabled ? "true" : "false"}
                       className={`w-11 h-6 rounded-full transition-all ${ambientEnabled ? 'bg-[#d0a78b]' : 'bg-zinc-700'}`}
                     >
                       <span className={`block w-4 h-4 rounded-full bg-white transition-all mt-1 ${ambientEnabled ? 'ml-6' : 'ml-1'}`} />

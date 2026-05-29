@@ -52,3 +52,8 @@ input[type="range"]::-moz-range-thumb {
   -webkit-mask-image: linear-gradient(to right, transparent, black 15%, black 85%, transparent);
   mask-image: linear-gradient(to right, transparent, black 15%, black 85%, transparent);
 }
+
+.orb-glow {
+  background: radial-gradient(circle, rgba(208,167,139,var(--orb-opacity, 0.06)) 0%, transparent 70%);
+  transform: scale(var(--orb-scale, 1));
+}
