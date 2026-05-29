@@ -2819,13 +2819,11 @@ ${historyContext}
 
         <div className="relative flex items-center justify-center w-full h-[240px] sm:h-[320px]">
           <div
-            className={`absolute w-64 h-64 sm:w-80 sm:h-80 rounded-full blur-3xl transition-none`}
+            className={`absolute w-64 h-64 sm:w-80 sm:h-80 rounded-full blur-3xl transition-none orb-glow`}
             style={{
-              background: isActive
-                ? `radial-gradient(circle, rgba(208,167,139,${0.12 + breathLevel * 0.38}) 0%, transparent 70%)`
-                : 'radial-gradient(circle, rgba(208,167,139,0.06) 0%, transparent 70%)',
-              transform: `scale(${isActive ? 1 + breathLevel * 0.3 : 1})`,
-            }}
+              '--orb-opacity': isActive ? 0.12 + breathLevel * 0.38 : 0.06,
+              '--orb-scale': isActive ? 1 + breathLevel * 0.3 : 1,
+            } as React.CSSProperties}
           />
 
           <button
