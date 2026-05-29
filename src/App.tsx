@@ -456,18 +456,6 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    getRedirectResult(auth).then((result) => {
-      if (result) {
-        const credential = GoogleAuthProvider.credentialFromResult(result);
-        if (credential?.accessToken) {
-          setGoogleToken(credential.accessToken);
-          storeToken(credential.accessToken, result.user.uid);
-        }
-      }
-    }).catch(console.error);
-  }, []);
-
-  useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
       setUser(u);
 
@@ -477,6 +465,17 @@ export default function App() {
           if (restored) {
             setGoogleToken(restored);
           }
+
+          getRedirectResult(auth).then((result) => {
+            if (result) {
+              const credential = GoogleAuthProvider.credentialFromResult(result);
+              if (credential?.accessToken) {
+                setGoogleToken(credential.accessToken);
+                storeToken(credential.accessToken, result.user.uid);
+              }
+              history.replaceState({}, '', '/');
+            }
+          }).catch(console.error);
 
           const { data: existing } = await supabase
             .from('user_settings')
