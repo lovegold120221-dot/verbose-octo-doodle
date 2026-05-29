@@ -15,6 +15,15 @@ import {
   Smartphone,
   Users,
   X,
+  Eye,
+  EyeOff,
+  FlaskConical,
+  Trash2,
+  Globe,
+  Database,
+  Lock,
+  Wifi,
+  AlertTriangle,
 } from 'lucide-react';
 import {
   disconnectWhatsApp,
@@ -26,6 +35,14 @@ import {
   startWhatsAppPairing,
 } from '../lib/whatsappClient';
 import { supabase } from '../lib/supabase';
+import { GeneratingOverlay } from './GeneratingOverlay';
+import {
+  getEnvCredentials,
+  saveEnvCredential,
+  testEnvCredential,
+  clearEnvOverride,
+  type CredentialEntry,
+} from '../lib/adminClient';
 
 type PermissionKey =
   | 'send_messages'
@@ -55,6 +72,42 @@ const emptyPermissions = permissionOptions.reduce((acc, item) => {
   return acc;
 }, {} as Record<PermissionKey, boolean>);
 
+type AdminSection = 'env' | 'whatsapp' | 'permissions' | 'messages';
+
+const CATEGORY_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
+  ai: Globe,
+  database: Database,
+  auth: ShieldCheck,
+  whatsapp: Smartphone,
+  sandbox: Wifi,
+  security: Lock,
+  other: KeyRound,
+};
+
+const CATEGORY_COLORS: Record<string, string> = {
+  ai: 'text-blue-400',
+  database: 'text-emerald-400',
+  auth: 'text-amber-400',
+  whatsapp: 'text-purple-400',
+  sandbox: 'text-cyan-400',
+  security: 'text-red-400',
+  other: 'text-zinc-400',
+};
+
+function StatusBadge({ entry }: { entry: CredentialEntry }) {
+  if (!entry.configured) {
+    return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-500/10 border border-red-500/20 text-[10px] text-red-300 font-medium">Missing</span>;
+  }
+  switch (entry.source) {
+    case 'admin_stored':
+      return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-[10px] text-emerald-300 font-medium">Admin Stored</span>;
+    case 'runtime':
+      return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-blue-500/10 border border-blue-500/20 text-[10px] text-blue-300 font-medium">Runtime ENV</span>;
+    default:
+      return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-zinc-500/10 border border-zinc-500/20 text-[10px] text-zinc-400 font-medium">{entry.source}</span>;
+  }
+}
+
 interface AdminPortalProps {
   user: User;
   onBack: () => void;
@@ -62,6 +115,7 @@ interface AdminPortalProps {
 }
 
 export function AdminPortal({ user, onBack, onLogout }: AdminPortalProps) {
+  const [activeSection, setActiveSection] = useState<AdminSection>('env');
   const [backendInput, setBackendInput] = useState(getBackendUrl());
   const [provider, setProvider] = useState<Provider>('linked_device');
   const [displayName, setDisplayName] = useState('');
@@ -91,6 +145,16 @@ export function AdminPortal({ user, onBack, onLogout }: AdminPortalProps) {
   const [testText, setTestText] = useState('Beatrice WhatsApp test message.');
   const [testing, setTesting] = useState(false);
 
+  const [envCredentials, setEnvCredentials] = useState<CredentialEntry[]>([]);
+  const [envLoading, setEnvLoading] = useState(false);
+  const [editingKey, setEditingKey] = useState<string | null>(null);
+  const [editValue, setEditValue] = useState('');
+  const [testingKey, setTestingKey] = useState<string | null>(null);
+  const [testResults, setTestResults] = useState<Record<string, { status: string; message: string }>>({});
+  const [revealedKeys, setRevealedKeys] = useState<Set<string>>(new Set());
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [envFilter, setEnvFilter] = useState<string>('all');
+
   const webhookUrl = useMemo(() => {
     return `${backendInput.replace(/\/+$/, '')}/api/whatsapp/webhook/${encodeURIComponent(user.uid)}`;
   }, [backendInput, user.uid]);
@@ -98,6 +162,31 @@ export function AdminPortal({ user, onBack, onLogout }: AdminPortalProps) {
   const enabledCount = useMemo(() => {
     return permissionOptions.filter(item => permissions[item.key]).length;
   }, [permissions]);
+
+  const filteredCredentials = useMemo(() => {
+    if (envFilter === 'all') return envCredentials;
+    if (envFilter === 'configured') return envCredentials.filter(c => c.configured);
+    if (envFilter === 'missing') return envCredentials.filter(c => !c.configured);
+    if (envFilter === 'server') return envCredentials.filter(c => c.serverOnly);
+    return envCredentials.filter(c => c.category === envFilter);
+  }, [envCredentials, envFilter]);
+
+  const categories = useMemo(() => {
+    const cats = new Set(envCredentials.map(c => c.category));
+    return Array.from(cats);
+  }, [envCredentials]);
+
+  const loadEnvCredentials = useCallback(async () => {
+    setEnvLoading(true);
+    try {
+      const creds = await getEnvCredentials();
+      setEnvCredentials(creds);
+    } catch (err: any) {
+      setError('Failed to load admin ENV: ' + (err.message || 'connection error'));
+    } finally {
+      setEnvLoading(false);
+    }
+  }, []);
 
   const loadOverview = useCallback(async () => {
     setError('');
@@ -129,7 +218,8 @@ export function AdminPortal({ user, onBack, onLogout }: AdminPortalProps) {
 
   useEffect(() => {
     loadOverview();
-  }, [loadOverview]);
+    loadEnvCredentials();
+  }, [loadOverview, loadEnvCredentials]);
 
   const saveConfig = async () => {
     setSaving(true);
@@ -234,8 +324,89 @@ export function AdminPortal({ user, onBack, onLogout }: AdminPortalProps) {
     }
   };
 
+  const handleEditCredential = (key: string) => {
+    setEditingKey(key);
+    setEditValue('');
+    setError('');
+    setNotice('');
+  };
+
+  const handleSaveCredential = async () => {
+    if (!editingKey || !editValue) return;
+    setIsGenerating(true);
+    setError('');
+    setNotice('');
+    try {
+      await saveEnvCredential(editingKey, editValue);
+      setNotice(`Credential ${editingKey} saved.`);
+      setEditingKey(null);
+      setEditValue('');
+      await loadEnvCredentials();
+    } catch (err: any) {
+      setError(err.message || 'Failed to save credential');
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  const handleTestCredential = async (key: string) => {
+    setTestingKey(key);
+    setError('');
+    setNotice('');
+    setIsGenerating(true);
+    try {
+      const result = await testEnvCredential(key);
+      setTestResults(prev => ({ ...prev, [key]: { status: result.status, message: result.message } }));
+      setNotice(`Test result: ${result.message}`);
+    } catch (err: any) {
+      setError(err.message || 'Test failed');
+    } finally {
+      setTestingKey(null);
+      setIsGenerating(false);
+    }
+  };
+
+  const handleClearOverride = async (key: string) => {
+    setIsGenerating(true);
+    setError('');
+    setNotice('');
+    try {
+      const result = await clearEnvOverride(key);
+      setNotice(result.message || `Admin override cleared for ${key}.`);
+      await loadEnvCredentials();
+    } catch (err: any) {
+      setError(err.message || 'Failed to clear override');
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  const toggleReveal = (key: string) => {
+    setRevealedKeys(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  const handleCopyMasked = async (entry: CredentialEntry) => {
+    if (entry.canReveal) {
+      try {
+        await navigator.clipboard.writeText(entry.maskedValue);
+        setNotice(`Copied masked value for ${entry.key}.`);
+      } catch {}
+    } else {
+      setNotice(`Runtime ENV secrets cannot be revealed. Configure an admin override to manage this value.`);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-[#0b0908] text-zinc-100">
+      <GeneratingOverlay
+        open={isGenerating}
+        onClose={() => setIsGenerating(false)}
+      />
       <div className="fixed inset-0 pointer-events-none bg-[radial-gradient(circle_at_top_left,rgba(208,167,139,0.16),transparent_32%),radial-gradient(circle_at_bottom_right,rgba(245,158,11,0.08),transparent_34%)]" />
       <div className="relative z-10 min-h-screen grid grid-cols-1 lg:grid-cols-[260px_1fr]">
         <aside className="border-b lg:border-b-0 lg:border-r border-white/10 bg-black/25 backdrop-blur-xl p-5 lg:min-h-screen">
@@ -251,15 +422,23 @@ export function AdminPortal({ user, onBack, onLogout }: AdminPortalProps) {
 
           <nav className="mt-8 grid gap-2 text-sm">
             {[
-              ['Dashboard', Activity],
-              ['WhatsApp', Smartphone],
-              ['Permissions', ShieldCheck],
-              ['Messages', MessageSquare],
-            ].map(([label, Icon]) => (
-              <a key={String(label)} href={`#${String(label).toLowerCase()}`} className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-zinc-300 hover:bg-white/5 hover:text-white transition-colors">
-                <Icon className="w-4 h-4 text-[#d0a78b]" />
+              ['Environment', KeyRound, 'env' as AdminSection],
+              ['WhatsApp', Smartphone, 'whatsapp' as AdminSection],
+              ['Permissions', ShieldCheck, 'permissions' as AdminSection],
+              ['Messages', MessageSquare, 'messages' as AdminSection],
+            ].map(([label, Icon, section]) => (
+              <button
+                key={String(section)}
+                onClick={() => setActiveSection(section as AdminSection)}
+                className={`flex items-center gap-3 px-3 py-2.5 rounded-xl transition-colors text-left ${
+                  activeSection === section
+                    ? 'bg-[#d0a78b]/10 text-[#d0a78b] border border-[#d0a78b]/20'
+                    : 'text-zinc-300 hover:bg-white/5 hover:text-white'
+                }`}
+              >
+                <Icon className="w-4 h-4" />
                 {String(label)}
-              </a>
+              </button>
             ))}
           </nav>
 
@@ -275,21 +454,31 @@ export function AdminPortal({ user, onBack, onLogout }: AdminPortalProps) {
           </div>
         </aside>
 
-        <main className="p-4 sm:p-6 lg:p-8 space-y-6">
+        <main className="p-4 sm:p-6 lg:p-8 space-y-6 overflow-y-auto max-h-screen">
           <header className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
             <div>
               <p className="text-xs uppercase tracking-[0.25em] text-zinc-500">{user.email}</p>
-              <h2 className="text-3xl sm:text-4xl font-semibold tracking-tight">Operations dashboard</h2>
+              <h2 className="text-3xl sm:text-4xl font-semibold tracking-tight">
+                {activeSection === 'env' ? 'Environment Credentials' :
+                 activeSection === 'whatsapp' ? 'WhatsApp Configuration' :
+                 activeSection === 'permissions' ? 'Delegated Permissions' :
+                 'Message Activity'}
+              </h2>
             </div>
             <div className="flex gap-2">
-              <button onClick={loadOverview} className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 text-sm">
-                <RefreshCw className="w-4 h-4" />
+              <button
+                onClick={() => { loadOverview(); loadEnvCredentials(); }}
+                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 text-sm"
+              >
+                <RefreshCw className={`w-4 h-4 ${loading || envLoading ? 'animate-spin' : ''}`} />
                 Refresh
               </button>
-              <button onClick={saveConfig} disabled={saving} className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[#d0a78b] text-black font-semibold hover:bg-[#ebd0bc] disabled:opacity-60 text-sm">
-                {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-                Save
-              </button>
+              {activeSection === 'whatsapp' && (
+                <button onClick={saveConfig} disabled={saving} className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[#d0a78b] text-black font-semibold hover:bg-[#ebd0bc] disabled:opacity-60 text-sm">
+                  {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                  Save
+                </button>
+              )}
             </div>
           </header>
 
@@ -300,199 +489,357 @@ export function AdminPortal({ user, onBack, onLogout }: AdminPortalProps) {
             </div>
           )}
 
-          <section id="dashboard" className="grid grid-cols-2 xl:grid-cols-4 gap-3">
-            {[
-              ['Status', waStatus === 'paired' ? 'Linked' : provider === 'cloud_api' && hasAccessToken ? 'Cloud ready' : waStatus.replace(/_/g, ' ')],
-              ['Permissions', `${enabledCount}/8 enabled`],
-              ['Chats', String(chats.length)],
-              ['Contacts', String(contactsCount)],
-            ].map(([label, value]) => (
-              <div key={label} className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
-                <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-500">{label}</p>
-                <p className="mt-2 text-xl font-semibold capitalize">{value}</p>
-              </div>
-            ))}
-          </section>
-
-          <section id="whatsapp" className="grid grid-cols-1 xl:grid-cols-[1.1fr_0.9fr] gap-4">
-            <div className="rounded-3xl border border-white/10 bg-white/[0.04] p-5 sm:p-6 space-y-5">
-              <div className="flex items-center gap-3">
-                <KeyRound className="w-5 h-5 text-[#d0a78b]" />
-                <div>
-                  <h3 className="text-lg font-semibold">WhatsApp credentials</h3>
-                  <p className="text-xs text-zinc-500">Server-side storage per Firebase user. Secret fields are never returned to the browser.</p>
-                </div>
-              </div>
-
-              <div className="grid gap-4">
-                <label className="grid gap-2">
-                  <span className="text-[10px] uppercase tracking-widest text-zinc-500">Backend API URL</span>
-                  <input value={backendInput} onChange={e => setBackendInput(e.target.value)} className="rounded-xl bg-black/30 border border-white/10 px-4 py-3 text-sm outline-none focus:border-[#d0a78b]/60" />
-                </label>
-
-                <div className="grid grid-cols-2 gap-2 rounded-xl bg-black/25 border border-white/10 p-1">
-                  <button onClick={() => setProvider('linked_device')} className={`rounded-lg px-3 py-2 text-sm ${provider === 'linked_device' ? 'bg-[#d0a78b] text-black font-semibold' : 'text-zinc-400 hover:bg-white/5'}`}>
-                    Linked Device
+          {activeSection === 'env' && (
+            <section className="space-y-4">
+              <div className="flex flex-wrap gap-2">
+                {[
+                  ['all', 'All'],
+                  ['configured', 'Configured'],
+                  ['missing', 'Missing'],
+                  ['server', 'Server-Only'],
+                  ...categories.map(c => [c, c]),
+                ].map(([value, label]) => (
+                  <button
+                    key={String(value)}
+                    onClick={() => setEnvFilter(String(value))}
+                    className={`px-3 py-1.5 rounded-lg text-xs border transition-all ${
+                      envFilter === value
+                        ? 'bg-[#d0a78b]/10 border-[#d0a78b]/20 text-[#d0a78b]'
+                        : 'bg-white/5 border-white/10 text-zinc-400 hover:text-zinc-200'
+                    }`}
+                  >
+                    {String(label)}
                   </button>
-                  <button onClick={() => setProvider('cloud_api')} className={`rounded-lg px-3 py-2 text-sm ${provider === 'cloud_api' ? 'bg-[#d0a78b] text-black font-semibold' : 'text-zinc-400 hover:bg-white/5'}`}>
-                    Cloud API
-                  </button>
-                </div>
-
-                <label className="grid gap-2">
-                  <span className="text-[10px] uppercase tracking-widest text-zinc-500">Connection label</span>
-                  <input value={displayName} onChange={e => setDisplayName(e.target.value)} placeholder="e.g. Master E WhatsApp" className="rounded-xl bg-black/30 border border-white/10 px-4 py-3 text-sm outline-none focus:border-[#d0a78b]/60" />
-                </label>
-
-                {provider === 'cloud_api' && (
-                  <div className="grid gap-4 md:grid-cols-2">
-                    <label className="grid gap-2">
-                      <span className="text-[10px] uppercase tracking-widest text-zinc-500">Phone Number ID</span>
-                      <input value={phoneNumberId} onChange={e => setPhoneNumberId(e.target.value)} className="rounded-xl bg-black/30 border border-white/10 px-4 py-3 text-sm outline-none focus:border-[#d0a78b]/60" />
-                    </label>
-                    <label className="grid gap-2">
-                      <span className="text-[10px] uppercase tracking-widest text-zinc-500">Business Account ID</span>
-                      <input value={businessAccountId} onChange={e => setBusinessAccountId(e.target.value)} className="rounded-xl bg-black/30 border border-white/10 px-4 py-3 text-sm outline-none focus:border-[#d0a78b]/60" />
-                    </label>
-                    <label className="grid gap-2">
-                      <span className="text-[10px] uppercase tracking-widest text-zinc-500">Access Token {hasAccessToken ? '(saved)' : ''}</span>
-                      <input value={accessToken} onChange={e => setAccessToken(e.target.value)} placeholder={hasAccessToken ? 'Leave blank to keep saved token' : 'Permanent or system-user token'} type="password" className="rounded-xl bg-black/30 border border-white/10 px-4 py-3 text-sm outline-none focus:border-[#d0a78b]/60" />
-                    </label>
-                    <label className="grid gap-2">
-                      <span className="text-[10px] uppercase tracking-widest text-zinc-500">App Secret {hasAppSecret ? '(saved)' : ''}</span>
-                      <input value={appSecret} onChange={e => setAppSecret(e.target.value)} placeholder="Optional" type="password" className="rounded-xl bg-black/30 border border-white/10 px-4 py-3 text-sm outline-none focus:border-[#d0a78b]/60" />
-                    </label>
-                    <label className="grid gap-2">
-                      <span className="text-[10px] uppercase tracking-widest text-zinc-500">Webhook Verify Token {hasWebhookVerifyToken ? '(saved)' : ''}</span>
-                      <input value={webhookVerifyToken} onChange={e => setWebhookVerifyToken(e.target.value)} placeholder={hasWebhookVerifyToken ? 'Leave blank to keep saved token' : 'Choose a private verify token'} type="password" className="rounded-xl bg-black/30 border border-white/10 px-4 py-3 text-sm outline-none focus:border-[#d0a78b]/60" />
-                    </label>
-                    <label className="grid gap-2">
-                      <span className="text-[10px] uppercase tracking-widest text-zinc-500">API Version</span>
-                      <input value={apiVersion} onChange={e => setApiVersion(e.target.value)} placeholder="v23.0" className="rounded-xl bg-black/30 border border-white/10 px-4 py-3 text-sm outline-none focus:border-[#d0a78b]/60" />
-                    </label>
-                    <label className="grid gap-2">
-                      <span className="text-[10px] uppercase tracking-widest text-zinc-500">Default Country Code</span>
-                      <input value={defaultCountryCode} onChange={e => setDefaultCountryCode(e.target.value)} placeholder="32, 1, 63..." className="rounded-xl bg-black/30 border border-white/10 px-4 py-3 text-sm outline-none focus:border-[#d0a78b]/60" />
-                    </label>
-                    <div className="md:col-span-2 rounded-xl bg-black/25 border border-white/10 p-3">
-                      <p className="text-[10px] uppercase tracking-widest text-zinc-500 mb-1">Webhook URL</p>
-                      <p className="text-xs text-zinc-300 break-all">{webhookUrl}</p>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-
-            <div className="rounded-3xl border border-white/10 bg-white/[0.04] p-5 sm:p-6 space-y-5">
-              <div className="flex items-center justify-between gap-4">
-                <div>
-                  <h3 className="text-lg font-semibold">Linked-device session</h3>
-                  <p className="text-xs text-zinc-500">Best for personal WhatsApp tasks, reads, contacts, and groups.</p>
-                </div>
-                <span className={`rounded-full px-3 py-1 text-[10px] uppercase tracking-widest ${waStatus === 'paired' ? 'bg-emerald-500/15 text-emerald-300' : 'bg-amber-500/15 text-amber-300'}`}>
-                  {waStatus}
-                </span>
+                ))}
               </div>
 
-              {qrCode ? (
-                <div className="grid place-items-center rounded-2xl border border-white/10 bg-black/25 p-4">
-                  <img src={qrCode} alt="WhatsApp pairing QR" className="w-60 h-60 rounded-2xl bg-white p-3" />
-                  <p className="mt-3 text-xs text-zinc-500 text-center">Open WhatsApp, go to Linked Devices, then scan this QR code.</p>
+              {envLoading ? (
+                <div className="flex items-center justify-center py-12">
+                  <Loader2 className="w-6 h-6 animate-spin text-[#d0a78b]" />
                 </div>
               ) : (
-                <div className="rounded-2xl border border-white/10 bg-black/25 p-4">
-                  <p className="text-sm text-zinc-300">{waStatus === 'paired' ? `Connected${waPhone ? ` to ${waPhone}` : ''}.` : 'No active linked-device session.'}</p>
+                <div className="space-y-2">
+                  {filteredCredentials.map(entry => {
+                    const CatIcon = CATEGORY_ICONS[entry.category] || KeyRound;
+                    const catColor = CATEGORY_COLORS[entry.category] || 'text-zinc-400';
+                    return (
+                      <div key={entry.key} className="rounded-2xl border border-white/10 bg-white/[0.04] p-4 space-y-3">
+                        <div className="flex items-start justify-between gap-4">
+                          <div className="flex items-center gap-3 min-w-0">
+                            <CatIcon className={`w-4 h-4 shrink-0 ${catColor}`} />
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="text-sm font-mono font-medium text-zinc-200">{entry.key}</span>
+                                <StatusBadge entry={entry} />
+                                {entry.serverOnly && (
+                                  <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-red-500/10 text-[9px] text-red-300 font-mono">SERVER</span>
+                                )}
+                              </div>
+                              <p className="text-[10px] text-zinc-500 mt-0.5">{entry.label}</p>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2 text-xs text-zinc-500">
+                          <span className="font-mono">Source: {entry.source}</span>
+                          {entry.configured && (
+                            <span className="font-mono truncate max-w-[200px]">
+                              {entry.canReveal && revealedKeys.has(entry.key)
+                                ? entry.maskedValue
+                                : entry.maskedValue || '********'}
+                            </span>
+                          )}
+                        </div>
+
+                        {testResults[entry.key] && (
+                          <div className={`text-[10px] font-mono ${testResults[entry.key].status === 'ok' ? 'text-emerald-400' : testResults[entry.key].status === 'failed' ? 'text-red-400' : 'text-zinc-400'}`}>
+                            Test: {testResults[entry.key].message}
+                          </div>
+                        )}
+
+                        {editingKey === entry.key ? (
+                          <div className="flex gap-2">
+                            <input
+                              type="password"
+                              value={editValue}
+                              onChange={e => setEditValue(e.target.value)}
+                              placeholder="Enter new value"
+                              autoFocus
+                              className="flex-1 rounded-xl bg-black/30 border border-white/10 px-4 py-2 text-xs outline-none focus:border-[#d0a78b]/60 font-mono"
+                            />
+                            <button
+                              onClick={handleSaveCredential}
+                              disabled={!editValue}
+                              className="px-3 py-2 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 text-xs hover:bg-emerald-500/20 disabled:opacity-50"
+                            >
+                              <Save className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              onClick={() => { setEditingKey(null); setEditValue(''); }}
+                              className="px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-zinc-400 text-xs hover:text-zinc-200"
+                            >
+                              <X className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="flex flex-wrap gap-2">
+                            <button
+                              onClick={() => handleEditCredential(entry.key)}
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-[10px] text-zinc-300 hover:text-white hover:bg-white/10 transition-all"
+                            >
+                              <Save className="w-3 h-3" />
+                              {entry.configured ? 'Override' : 'Add'}
+                            </button>
+                            {entry.testable && (
+                              <button
+                                onClick={() => handleTestCredential(entry.key)}
+                                disabled={testingKey === entry.key}
+                                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-500/10 border border-blue-500/20 text-[10px] text-blue-300 hover:bg-blue-500/20 disabled:opacity-50 transition-all"
+                              >
+                                {testingKey === entry.key ? <Loader2 className="w-3 h-3 animate-spin" /> : <FlaskConical className="w-3 h-3" />}
+                                Test
+                              </button>
+                            )}
+                            <button
+                              onClick={() => handleCopyMasked(entry)}
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-[10px] text-zinc-400 hover:text-zinc-200 transition-all"
+                            >
+                              Copy
+                            </button>
+                            {entry.canReveal && (
+                              <button
+                                onClick={() => toggleReveal(entry.key)}
+                                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-[10px] text-zinc-400 hover:text-zinc-200 transition-all"
+                              >
+                                {revealedKeys.has(entry.key) ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+                                {revealedKeys.has(entry.key) ? 'Hide' : 'Reveal'}
+                              </button>
+                            )}
+                            {entry.source === 'admin_stored' && (
+                              <button
+                                onClick={() => handleClearOverride(entry.key)}
+                                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-500/10 border border-red-500/20 text-[10px] text-red-300 hover:bg-red-500/20 transition-all"
+                              >
+                                <Trash2 className="w-3 h-3" />
+                                Clear
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                  {filteredCredentials.length === 0 && (
+                    <div className="flex items-center justify-center py-12 text-zinc-500 text-sm">
+                      No credentials match the selected filter.
+                    </div>
+                  )}
                 </div>
               )}
+            </section>
+          )}
 
-              <div className="grid grid-cols-2 gap-2">
-                <button onClick={pairLinkedDevice} disabled={pairing} className="inline-flex items-center justify-center gap-2 rounded-xl bg-[#d0a78b] text-black px-4 py-3 font-semibold hover:bg-[#ebd0bc] disabled:opacity-60">
-                  {pairing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Smartphone className="w-4 h-4" />}
-                  Pair
-                </button>
-                <button onClick={disconnect} className="inline-flex items-center justify-center gap-2 rounded-xl bg-white/5 border border-white/10 px-4 py-3 hover:bg-red-500/10 hover:border-red-500/30">
-                  <X className="w-4 h-4" />
-                  Disconnect
-                </button>
-              </div>
+          {activeSection === 'whatsapp' && (
+            <>
+              <section className="grid grid-cols-2 xl:grid-cols-4 gap-3">
+                {[
+                  ['Status', waStatus === 'paired' ? 'Linked' : provider === 'cloud_api' && hasAccessToken ? 'Cloud ready' : waStatus.replace(/_/g, ' ')],
+                  ['Permissions', `${enabledCount}/8 enabled`],
+                  ['Chats', String(chats.length)],
+                  ['Contacts', String(contactsCount)],
+                ].map(([label, value]) => (
+                  <div key={label} className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+                    <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-500">{label}</p>
+                    <p className="mt-2 text-xl font-semibold capitalize">{value}</p>
+                  </div>
+                ))}
+              </section>
 
-              <div className="rounded-2xl border border-white/10 bg-black/25 p-4 space-y-3">
-                <p className="text-[10px] uppercase tracking-widest text-zinc-500">Send test</p>
-                <input value={testTo} onChange={e => setTestTo(e.target.value)} placeholder="Recipient number with country code" className="w-full rounded-xl bg-black/30 border border-white/10 px-4 py-3 text-sm outline-none focus:border-[#d0a78b]/60" />
-                <textarea value={testText} onChange={e => setTestText(e.target.value)} className="w-full min-h-20 rounded-xl bg-black/30 border border-white/10 px-4 py-3 text-sm outline-none focus:border-[#d0a78b]/60 resize-none" />
-                <button onClick={sendTest} disabled={testing || !testTo || !testText} className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-white/10 border border-white/10 px-4 py-3 hover:bg-white/15 disabled:opacity-50">
-                  {testing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-                  Send Test
-                </button>
-              </div>
-            </div>
-          </section>
+              <section className="grid grid-cols-1 xl:grid-cols-[1.1fr_0.9fr] gap-4">
+                <div className="rounded-3xl border border-white/10 bg-white/[0.04] p-5 sm:p-6 space-y-5">
+                  <div className="flex items-center gap-3">
+                    <KeyRound className="w-5 h-5 text-[#d0a78b]" />
+                    <div>
+                      <h3 className="text-lg font-semibold">WhatsApp credentials</h3>
+                      <p className="text-xs text-zinc-500">Server-side storage per Firebase user.</p>
+                    </div>
+                  </div>
 
-          <section id="permissions" className="rounded-3xl border border-white/10 bg-white/[0.04] p-5 sm:p-6">
-            <div className="flex items-center gap-3 mb-4">
-              <ShieldCheck className="w-5 h-5 text-[#d0a78b]" />
-              <div>
-                <h3 className="text-lg font-semibold">Delegated permissions</h3>
-                <p className="text-xs text-zinc-500">These server-side toggles decide what Beatrice can do for this user.</p>
-              </div>
-            </div>
-            <div className="grid md:grid-cols-2 xl:grid-cols-4 gap-3">
-              {permissionOptions.map(item => (
-                <button
-                  key={item.key}
-                  onClick={() => setPermissions(prev => ({ ...prev, [item.key]: !prev[item.key] }))}
-                  className={`text-left rounded-2xl border p-4 transition-colors ${permissions[item.key] ? 'border-[#d0a78b]/50 bg-[#d0a78b]/10' : 'border-white/10 bg-black/20 hover:bg-white/[0.05]'}`}
-                >
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="font-medium">{item.label}</span>
-                    <span className={`h-5 w-9 rounded-full p-0.5 transition-colors ${permissions[item.key] ? 'bg-[#d0a78b]' : 'bg-zinc-700'}`}>
-                      <span className={`block h-4 w-4 rounded-full bg-white transition-transform ${permissions[item.key] ? 'translate-x-4' : ''}`} />
+                  <div className="grid gap-4">
+                    <label className="grid gap-2">
+                      <span className="text-[10px] uppercase tracking-widest text-zinc-500">Backend API URL</span>
+                      <input value={backendInput} onChange={e => setBackendInput(e.target.value)} className="rounded-xl bg-black/30 border border-white/10 px-4 py-3 text-sm outline-none focus:border-[#d0a78b]/60" />
+                    </label>
+
+                    <div className="grid grid-cols-2 gap-2 rounded-xl bg-black/25 border border-white/10 p-1">
+                      <button onClick={() => setProvider('linked_device')} className={`rounded-lg px-3 py-2 text-sm ${provider === 'linked_device' ? 'bg-[#d0a78b] text-black font-semibold' : 'text-zinc-400 hover:bg-white/5'}`}>
+                        Linked Device
+                      </button>
+                      <button onClick={() => setProvider('cloud_api')} className={`rounded-lg px-3 py-2 text-sm ${provider === 'cloud_api' ? 'bg-[#d0a78b] text-black font-semibold' : 'text-zinc-400 hover:bg-white/5'}`}>
+                        Cloud API
+                      </button>
+                    </div>
+
+                    <label className="grid gap-2">
+                      <span className="text-[10px] uppercase tracking-widest text-zinc-500">Connection label</span>
+                      <input value={displayName} onChange={e => setDisplayName(e.target.value)} placeholder="e.g. Master E WhatsApp" className="rounded-xl bg-black/30 border border-white/10 px-4 py-3 text-sm outline-none focus:border-[#d0a78b]/60" />
+                    </label>
+
+                    {provider === 'cloud_api' && (
+                      <div className="grid gap-4 md:grid-cols-2">
+                        <label className="grid gap-2">
+                          <span className="text-[10px] uppercase tracking-widest text-zinc-500">Phone Number ID</span>
+                          <input value={phoneNumberId} onChange={e => setPhoneNumberId(e.target.value)} className="rounded-xl bg-black/30 border border-white/10 px-4 py-3 text-sm outline-none focus:border-[#d0a78b]/60" />
+                        </label>
+                        <label className="grid gap-2">
+                          <span className="text-[10px] uppercase tracking-widest text-zinc-500">Business Account ID</span>
+                          <input value={businessAccountId} onChange={e => setBusinessAccountId(e.target.value)} className="rounded-xl bg-black/30 border border-white/10 px-4 py-3 text-sm outline-none focus:border-[#d0a78b]/60" />
+                        </label>
+                        <label className="grid gap-2">
+                          <span className="text-[10px] uppercase tracking-widest text-zinc-500">Access Token {hasAccessToken ? '(saved)' : ''}</span>
+                          <input value={accessToken} onChange={e => setAccessToken(e.target.value)} placeholder={hasAccessToken ? 'Leave blank to keep saved token' : 'Permanent or system-user token'} type="password" className="rounded-xl bg-black/30 border border-white/10 px-4 py-3 text-sm outline-none focus:border-[#d0a78b]/60" />
+                        </label>
+                        <label className="grid gap-2">
+                          <span className="text-[10px] uppercase tracking-widest text-zinc-500">App Secret {hasAppSecret ? '(saved)' : ''}</span>
+                          <input value={appSecret} onChange={e => setAppSecret(e.target.value)} placeholder="Optional" type="password" className="rounded-xl bg-black/30 border border-white/10 px-4 py-3 text-sm outline-none focus:border-[#d0a78b]/60" />
+                        </label>
+                        <label className="grid gap-2">
+                          <span className="text-[10px] uppercase tracking-widest text-zinc-500">Webhook Verify Token {hasWebhookVerifyToken ? '(saved)' : ''}</span>
+                          <input value={webhookVerifyToken} onChange={e => setWebhookVerifyToken(e.target.value)} placeholder={hasWebhookVerifyToken ? 'Leave blank to keep saved token' : 'Choose a private verify token'} type="password" className="rounded-xl bg-black/30 border border-white/10 px-4 py-3 text-sm outline-none focus:border-[#d0a78b]/60" />
+                        </label>
+                        <label className="grid gap-2">
+                          <span className="text-[10px] uppercase tracking-widest text-zinc-500">API Version</span>
+                          <input value={apiVersion} onChange={e => setApiVersion(e.target.value)} placeholder="v23.0" className="rounded-xl bg-black/30 border border-white/10 px-4 py-3 text-sm outline-none focus:border-[#d0a78b]/60" />
+                        </label>
+                        <label className="grid gap-2">
+                          <span className="text-[10px] uppercase tracking-widest text-zinc-500">Default Country Code</span>
+                          <input value={defaultCountryCode} onChange={e => setDefaultCountryCode(e.target.value)} placeholder="32, 1, 63..." className="rounded-xl bg-black/30 border border-white/10 px-4 py-3 text-sm outline-none focus:border-[#d0a78b]/60" />
+                        </label>
+                        <div className="md:col-span-2 rounded-xl bg-black/25 border border-white/10 p-3">
+                          <p className="text-[10px] uppercase tracking-widest text-zinc-500 mb-1">Webhook URL</p>
+                          <p className="text-xs text-zinc-300 break-all">{webhookUrl}</p>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="rounded-3xl border border-white/10 bg-white/[0.04] p-5 sm:p-6 space-y-5">
+                  <div className="flex items-center justify-between gap-4">
+                    <div>
+                      <h3 className="text-lg font-semibold">Linked-device session</h3>
+                      <p className="text-xs text-zinc-500">Best for personal WhatsApp tasks.</p>
+                    </div>
+                    <span className={`rounded-full px-3 py-1 text-[10px] uppercase tracking-widest ${waStatus === 'paired' ? 'bg-emerald-500/15 text-emerald-300' : 'bg-amber-500/15 text-amber-300'}`}>
+                      {waStatus}
                     </span>
                   </div>
-                  <p className="mt-2 text-xs text-zinc-500 leading-relaxed">{item.note}</p>
-                </button>
-              ))}
-            </div>
-          </section>
 
-          <section id="messages" className="grid grid-cols-1 xl:grid-cols-[0.9fr_1.1fr] gap-4">
-            <div className="rounded-3xl border border-white/10 bg-white/[0.04] p-5 sm:p-6">
-              <div className="flex items-center gap-3 mb-4">
-                <Users className="w-5 h-5 text-[#d0a78b]" />
-                <h3 className="text-lg font-semibold">Recent chats</h3>
-              </div>
-              <div className="space-y-2 max-h-80 overflow-auto pr-1">
-                {loading ? <Loader2 className="w-5 h-5 animate-spin text-[#d0a78b]" /> : chats.length === 0 ? (
-                  <p className="text-sm text-zinc-500">No chats synced yet.</p>
-                ) : chats.map(chat => (
-                  <div key={chat.id} className="rounded-2xl border border-white/10 bg-black/20 p-3">
-                    <p className="text-sm font-medium truncate">{chat.name || chat.id}</p>
-                    <p className="text-xs text-zinc-500 truncate">{chat.lastMessage || chat.id}</p>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div className="rounded-3xl border border-white/10 bg-white/[0.04] p-5 sm:p-6">
-              <div className="flex items-center gap-3 mb-4">
-                <MessageSquare className="w-5 h-5 text-[#d0a78b]" />
-                <h3 className="text-lg font-semibold">Message activity</h3>
-              </div>
-              <div className="space-y-2 max-h-80 overflow-auto pr-1">
-                {messages.length === 0 ? (
-                  <p className="text-sm text-zinc-500">Messages will appear after pairing or webhook ingestion.</p>
-                ) : messages.map(message => (
-                  <div key={`${message.chatId}:${message.id}`} className="rounded-2xl border border-white/10 bg-black/20 p-3">
-                    <div className="flex items-center justify-between gap-3">
-                      <p className="text-xs text-zinc-500 truncate">{message.chatId}</p>
-                      <span className="text-[10px] uppercase tracking-widest text-zinc-600">{message.fromMe ? 'sent' : 'received'}</span>
+                  {qrCode ? (
+                    <div className="grid place-items-center rounded-2xl border border-white/10 bg-black/25 p-4">
+                      <img src={qrCode} alt="WhatsApp pairing QR" className="w-60 h-60 rounded-2xl bg-white p-3" />
+                      <p className="mt-3 text-xs text-zinc-500 text-center">Open WhatsApp, go to Linked Devices, then scan this QR code.</p>
                     </div>
-                    <p className="mt-1 text-sm text-zinc-200">{message.body}</p>
+                  ) : (
+                    <div className="rounded-2xl border border-white/10 bg-black/25 p-4">
+                      <p className="text-sm text-zinc-300">{waStatus === 'paired' ? `Connected${waPhone ? ` to ${waPhone}` : ''}.` : 'No active linked-device session.'}</p>
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <button onClick={pairLinkedDevice} disabled={pairing} className="inline-flex items-center justify-center gap-2 rounded-xl bg-[#d0a78b] text-black px-4 py-3 font-semibold hover:bg-[#ebd0bc] disabled:opacity-60">
+                      {pairing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Smartphone className="w-4 h-4" />}
+                      Pair
+                    </button>
+                    <button onClick={disconnect} className="inline-flex items-center justify-center gap-2 rounded-xl bg-white/5 border border-white/10 px-4 py-3 hover:bg-red-500/10 hover:border-red-500/30">
+                      <X className="w-4 h-4" />
+                      Disconnect
+                    </button>
                   </div>
+
+                  <div className="rounded-2xl border border-white/10 bg-black/25 p-4 space-y-3">
+                    <p className="text-[10px] uppercase tracking-widest text-zinc-500">Send test</p>
+                    <input value={testTo} onChange={e => setTestTo(e.target.value)} placeholder="Recipient number with country code" className="w-full rounded-xl bg-black/30 border border-white/10 px-4 py-3 text-sm outline-none focus:border-[#d0a78b]/60" />
+                    <textarea value={testText} onChange={e => setTestText(e.target.value)} className="w-full min-h-20 rounded-xl bg-black/30 border border-white/10 px-4 py-3 text-sm outline-none focus:border-[#d0a78b]/60 resize-none" />
+                    <button onClick={sendTest} disabled={testing || !testTo || !testText} className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-white/10 border border-white/10 px-4 py-3 hover:bg-white/15 disabled:opacity-50">
+                      {testing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                      Send Test
+                    </button>
+                  </div>
+                </div>
+              </section>
+            </>
+          )}
+
+          {activeSection === 'permissions' && (
+            <section className="rounded-3xl border border-white/10 bg-white/[0.04] p-5 sm:p-6">
+              <div className="flex items-center gap-3 mb-4">
+                <ShieldCheck className="w-5 h-5 text-[#d0a78b]" />
+                <div>
+                  <h3 className="text-lg font-semibold">Delegated permissions</h3>
+                  <p className="text-xs text-zinc-500">These server-side toggles decide what Beatrice can do for this user.</p>
+                </div>
+              </div>
+              <div className="grid md:grid-cols-2 xl:grid-cols-4 gap-3">
+                {permissionOptions.map(item => (
+                  <button
+                    key={item.key}
+                    onClick={() => setPermissions(prev => ({ ...prev, [item.key]: !prev[item.key] }))}
+                    className={`text-left rounded-2xl border p-4 transition-colors ${permissions[item.key] ? 'border-[#d0a78b]/50 bg-[#d0a78b]/10' : 'border-white/10 bg-black/20 hover:bg-white/[0.05]'}`}
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="font-medium">{item.label}</span>
+                      <span className={`h-5 w-9 rounded-full p-0.5 transition-colors ${permissions[item.key] ? 'bg-[#d0a78b]' : 'bg-zinc-700'}`}>
+                        <span className={`block h-4 w-4 rounded-full bg-white transition-transform ${permissions[item.key] ? 'translate-x-4' : ''}`} />
+                      </span>
+                    </div>
+                    <p className="mt-2 text-xs text-zinc-500 leading-relaxed">{item.note}</p>
+                  </button>
                 ))}
               </div>
-            </div>
-          </section>
+            </section>
+          )}
+
+          {activeSection === 'messages' && (
+            <section className="grid grid-cols-1 xl:grid-cols-[0.9fr_1.1fr] gap-4">
+              <div className="rounded-3xl border border-white/10 bg-white/[0.04] p-5 sm:p-6">
+                <div className="flex items-center gap-3 mb-4">
+                  <Users className="w-5 h-5 text-[#d0a78b]" />
+                  <h3 className="text-lg font-semibold">Recent chats</h3>
+                </div>
+                <div className="space-y-2 max-h-80 overflow-auto pr-1">
+                  {loading ? <Loader2 className="w-5 h-5 animate-spin text-[#d0a78b]" /> : chats.length === 0 ? (
+                    <p className="text-sm text-zinc-500">No chats synced yet.</p>
+                  ) : chats.map(chat => (
+                    <div key={chat.id} className="rounded-2xl border border-white/10 bg-black/20 p-3">
+                      <p className="text-sm font-medium truncate">{chat.name || chat.id}</p>
+                      <p className="text-xs text-zinc-500 truncate">{chat.lastMessage || chat.id}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="rounded-3xl border border-white/10 bg-white/[0.04] p-5 sm:p-6">
+                <div className="flex items-center gap-3 mb-4">
+                  <MessageSquare className="w-5 h-5 text-[#d0a78b]" />
+                  <h3 className="text-lg font-semibold">Message activity</h3>
+                </div>
+                <div className="space-y-2 max-h-80 overflow-auto pr-1">
+                  {messages.length === 0 ? (
+                    <p className="text-sm text-zinc-500">Messages will appear after pairing or webhook ingestion.</p>
+                  ) : messages.map(message => (
+                    <div key={`${message.chatId}:${message.id}`} className="rounded-2xl border border-white/10 bg-black/20 p-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="text-xs text-zinc-500 truncate">{message.chatId}</p>
+                        <span className="text-[10px] uppercase tracking-widest text-zinc-600">{message.fromMe ? 'sent' : 'received'}</span>
+                      </div>
+                      <p className="mt-1 text-sm text-zinc-200">{message.body}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </section>
+          )}
         </main>
       </div>
     </div>

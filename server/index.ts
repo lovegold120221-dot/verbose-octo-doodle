@@ -7,6 +7,8 @@ import { SandboxManager } from './sandbox';
 import { EburonWorker } from './eburon';
 import { WhatsAppManager } from './whatsapp';
 import * as waTools from './whatsapp-tools';
+import { requireAdmin } from './middleware/adminAuth';
+import adminEnvRouter from './routes/adminEnv';
 import type { TaskRequest, TaskStatusResponse } from './types';
 
 const app = express();
@@ -445,6 +447,10 @@ app.post('/api/whatsapp/webhook/:userId', (req, res) => {
     res.status(500).json({ error: err.message || 'Webhook ingest failed' });
   }
 });
+
+// ── Admin Routes ──
+
+app.use('/api/admin', requireAdmin, adminEnvRouter);
 
 // ── Shutdown hook ──
 

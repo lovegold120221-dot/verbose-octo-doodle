@@ -13,6 +13,7 @@ import { VideoPage } from './components/VideoPage';
 import { ComputerPage } from './components/ComputerPage';
 import { ProfilePage } from './components/ProfilePage';
 import { AdminPortal } from './components/AdminPortal';
+import { GeneratingOverlay } from './components/GeneratingOverlay';
 import { detectExecutionIntent } from './lib/executionDetector';
 import { createSandboxTask, pollTaskStatus, stopPolling, retryTask } from './lib/sandboxClient';
 import { startWhatsAppPairing, getWhatsAppStatus, disconnectWhatsApp } from './lib/whatsappClient';
@@ -790,6 +791,7 @@ function MaximusAgent({
 }) {
   const [isActive, setIsActive] = useState(false);
   const [connecting, setConnecting] = useState(false);
+  const [isGenerating, setIsGenerating] = useState(false);
   const [isAgentSpeaking, setIsAgentSpeaking] = useState(false);
   const [volumes, setVolumes] = useState<number[]>(Array(11).fill(0.05));
 
@@ -1253,6 +1255,7 @@ function MaximusAgent({
     const intent = detectExecutionIntent(text);
     if (!intent) return;
 
+    setIsGenerating(true);
     try {
       const { taskId, task } = await createSandboxTask(intent.type, intent.label, text, user?.email || undefined, user?.uid || undefined, historyContextRef.current);
       activeTaskIdRef.current = taskId;
@@ -1261,6 +1264,7 @@ function MaximusAgent({
       setComputerPreviewUrl(null);
       setComputerDownloadUrl(null);
       setShowComputerPage(true);
+      setIsGenerating(false);
 
       pollTaskStatus(
         taskId,
@@ -1289,6 +1293,7 @@ function MaximusAgent({
         }
       );
     } catch (err) {
+      setIsGenerating(false);
       console.error('Failed to create sandbox task:', err);
     }
   };
@@ -2400,24 +2405,26 @@ ${historyContext}
                         result = { ok: false, error: e.message || 'WhatsApp action failed' };
                       }
                      } else if (callName === 'create_document') {
-                       const args = call.args as any;
-                       try {
-                         const { streamDocumentFromVps } = await import('./lib/documentClient');
-                         const title = args.title || 'Document';
-                         const prompt = args.prompt || args.content || 'Create a professional document.';
-                         
-                         const taskId = crypto.randomUUID();
-                         setComputerTask({
-                           id: taskId,
-                           type: 'webpage',
-                           label: title,
-                           status: 'working',
-                           steps: [{ key: 'generating', label: 'Generating document via Ollama...', done: false, active: true }],
-                           output: { type: 'webpage', title, content: '', fileType: 'html' },
-                           createdAt: Date.now(),
-                         });
-                         setComputerOutput({ content: '', title });
-                         setShowComputerPage(true);
+                        const args = call.args as any;
+                        setIsGenerating(true);
+                        try {
+                          const { streamDocumentFromVps } = await import('./lib/documentClient');
+                          const title = args.title || 'Document';
+                          const prompt = args.prompt || args.content || 'Create a professional document.';
+                          
+                          const taskId = crypto.randomUUID();
+                          setComputerTask({
+                            id: taskId,
+                            type: 'webpage',
+                            label: title,
+                            status: 'working',
+                            steps: [{ key: 'generating', label: 'Generating document via Ollama...', done: false, active: true }],
+                            output: { type: 'webpage', title, content: '', fileType: 'html' },
+                            createdAt: Date.now(),
+                          });
+                          setComputerOutput({ content: '', title });
+                          setShowComputerPage(true);
+                          setIsGenerating(false);
 
 
                          const finalContent = await streamDocumentFromVps(user.uid, { title, content: prompt }, (chunk) => {
@@ -2434,13 +2441,14 @@ ${historyContext}
                          });
                          
                          result = { ok: true, title, content: finalContent };
-                       } catch (e: any) {
-                         setComputerTask(prev => {
-                           if (!prev) return null;
-                           return { ...prev, status: 'error' };
-                         });
-                         result = { error: `Generation failed: ${e.message}` };
-                       }
+                        } catch (e: any) {
+                          setIsGenerating(false);
+                          setComputerTask(prev => {
+                            if (!prev) return null;
+                            return { ...prev, status: 'error' };
+                          });
+                          result = { error: `Generation failed: ${e.message}` };
+                        }
 
 
                       }
@@ -2738,13 +2746,6 @@ ${historyContext}
         </div>
 
         <div className="flex items-center gap-2">
-          <a
-            href="/adminportal"
-            className="p-1.5 rounded-lg text-zinc-400 hover:text-[#d0a78b] hover:bg-zinc-800/50 transition-all duration-300"
-            aria-label="Open Admin Portal"
-          >
-            <Activity className="w-5 h-5 sm:w-6 sm:h-6" />
-          </a>
           <button
             onClick={() => setShowProfilePage(true)}
             className="w-7 h-7 sm:w-8 sm:h-8 rounded-full bg-zinc-900 border border-zinc-800 overflow-hidden flex items-center justify-center hover:border-[#d0a78b]/50 transition-all duration-300"
@@ -3220,13 +3221,7 @@ ${historyContext}
                     </div>
                   )}
 
-                  <a
-                    href="/adminportal"
-                    className="flex items-center justify-center gap-2 w-full rounded-2xl border border-[#d0a78b]/20 bg-[#d0a78b]/10 px-4 py-3 text-[10px] font-bold uppercase tracking-widest text-[#d0a78b] hover:bg-[#d0a78b]/15 transition-colors"
-                  >
-                    <Activity className="w-4 h-4" />
-                    Open Admin Portal
-                  </a>
+
 
                   {waQrCode && waStatus === 'qr_ready' && (
                     <div className="flex flex-col items-center pt-2 border-t border-white/5">
@@ -3366,6 +3361,11 @@ ${historyContext}
           </motion.div>
         )}
       </AnimatePresence>
+
+      <GeneratingOverlay
+        open={isGenerating || connecting}
+        onClose={() => { setIsGenerating(false); if (connecting) stopSession(); }}
+      />
     </div>
   );
 }

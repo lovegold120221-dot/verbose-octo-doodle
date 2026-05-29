@@ -5,6 +5,25 @@ html, body {
   -webkit-overflow-scrolling: touch;
 }
 
+input[type="range"]::-webkit-slider-thumb {
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #d0a78b;
+  cursor: pointer;
+  border: 2px solid #0b0908;
+}
+
+input[type="range"]::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #d0a78b;
+  cursor: pointer;
+  border: 2px solid #0b0908;
+}
+
 @keyframes cloud-drift-1 {
   0%, 100% { transform: translate(-15%, -15%) scale(1); }
   50% { transform: translate(15%, 10%) scale(1.15); }
