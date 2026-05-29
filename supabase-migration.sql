@@ -41,11 +41,25 @@ CREATE TABLE IF NOT EXISTS knowledge_files (
 
 CREATE INDEX IF NOT EXISTS idx_knowledge_files_user_id ON knowledge_files(user_id);
 
+CREATE TABLE IF NOT EXISTS admin_credentials (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  key TEXT NOT NULL UNIQUE,
+  encrypted_value TEXT NOT NULL,
+  masked_value TEXT,
+  source TEXT DEFAULT 'admin_stored',
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now(),
+  updated_by TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_admin_credentials_key ON admin_credentials(key);
+
 -- 2. DISABLE ROW LEVEL SECURITY on all tables
 -- The app uses Firebase Auth, not Supabase Auth, so RLS blocks all writes.
 ALTER TABLE messages DISABLE ROW LEVEL SECURITY;
 ALTER TABLE user_settings DISABLE ROW LEVEL SECURITY;
 ALTER TABLE knowledge_files DISABLE ROW LEVEL SECURITY;
+ALTER TABLE admin_credentials DISABLE ROW LEVEL SECURITY;
 
 -- Add new columns to existing user_settings table (idempotent)
 ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS user_title TEXT DEFAULT 'Boss';
@@ -54,6 +68,8 @@ ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS knowledge_domains TEXT[] DEFA
 ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS whatsapp_permissions JSONB DEFAULT '{"send_messages":false,"read_chats":false,"access_contacts":false,"manage_contacts":false,"access_groups":false,"send_group_messages":false,"read_group_chats":false,"manage_media":false,"view_message_history":false}'::jsonb;
 ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS whatsapp_paired BOOLEAN DEFAULT false;
 ALTER TABLE user_settings ADD COLUMN IF NOT EXISTS whatsapp_phone TEXT;
+
+ALTER TABLE admin_credentials ADD COLUMN IF NOT EXISTS updated_by TEXT;
 
 -- Add attachment columns to messages table (idempotent)
 ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachment_url TEXT;
