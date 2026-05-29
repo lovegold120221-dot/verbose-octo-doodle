@@ -1,0 +1,22 @@
+{
+  "provider": "cloud_api",
+  "displayName": "",
+  "businessAccountId": "1308236421503956",
+  "phoneNumberId": "1148407841689522",
+  "apiVersion": "v23.0",
+  "accessToken": "EAANxkZCarKo0BRtuq3shZCW1Is43WAcY9nzGcpLO4TDlmVbicMIamVFBS33zRvZA8nhvTGolv8bqhCZBd8jlJUl4TL2NswvyYtHEGfJY1mYRP6qCD2yVgNtqZAn01ZAZBSfTqHSScEgY6Cx4TRaXbo0xT0ZB2JIMX3S0xDrD2P5GZC9kTJ3O5d53oZCA5DLpLrIbRwJh058PzwxSi0ZACTWLwr6EJrqmzPtFl78mrsrpoyATgEpdxqAIbcZAn0UZAjRxk9ygZAq1wikHqKBHwjzEVMruSixAZDZD",
+  "appSecret": "25467193cc9f12b7478169f14391d1b6",
+  "webhookVerifyToken": "",
+  "defaultCountryCode": "",
+  "permissions": {
+    "send_messages": true,
+    "read_chats": true,
+    "access_contacts": true,
+    "manage_contacts": false,
+    "access_groups": false,
+    "send_group_messages": false,
+    "read_group_chats": false,
+    "view_message_history": false
+  },
+  "updatedAt": "2026-05-29T10:55:38.404Z"
+}
