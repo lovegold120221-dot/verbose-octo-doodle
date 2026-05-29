@@ -8,6 +8,8 @@ interface ChatMessage {
   text: string;
   sessionId?: string;
   timestamp: any;
+  attachmentUrl?: string;
+  attachmentName?: string;
 }
 
 interface SessionSummary {
@@ -329,6 +331,16 @@ export function ChatPage({
                         {formatTime(msg.timestamp)}
                       </span>
                     </div>
+                    {msg.attachmentUrl && msg.attachmentUrl.match(/\.(jpe?g|png|gif|webp|bmp|svg)$/i) && (
+                      <div className="mb-2 rounded-xl overflow-hidden border border-zinc-800/60 bg-black/30">
+                        <img
+                          src={msg.attachmentUrl}
+                          alt={msg.attachmentName || 'Attachment'}
+                          className="max-h-56 w-full object-contain"
+                          loading="lazy"
+                        />
+                      </div>
+                    )}
                     <div className={`text-xs sm:text-sm leading-relaxed prose prose-invert prose-sm max-w-none ${msg.role === 'model' ? 'text-zinc-300' : ''}`}>
                       {msg.role === 'model' ? (
                         <ReactMarkdown>{msg.text}</ReactMarkdown>
@@ -336,6 +348,17 @@ export function ChatPage({
                         <p className="whitespace-pre-wrap break-words">{msg.text}</p>
                       )}
                     </div>
+                    {msg.attachmentUrl && !msg.attachmentUrl.match(/\.(jpe?g|png|gif|webp|bmp|svg)$/i) && (
+                      <a
+                        href={msg.attachmentUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="mt-1.5 inline-flex items-center gap-1.5 text-[10px] sm:text-[11px] text-[#d0a78b]/70 hover:text-[#d0a78b] underline underline-offset-2 transition-colors"
+                      >
+                        <Paperclip className="w-3 h-3" />
+                        {msg.attachmentName || 'Open attachment'}
+                      </a>
+                    )}
                   </div>
                 </motion.div>
               ))}

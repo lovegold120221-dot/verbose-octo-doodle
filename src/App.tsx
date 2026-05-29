@@ -1370,8 +1370,13 @@ function MaximusAgent({
         .from('chat-attachments')
         .getPublicUrl(path);
 
-      // 2. Real-time visibility for Beatrice
-      if (file.type.startsWith('image/')) {
+      // 2. Extract content & send to Beatrice
+      const type = file.type;
+      const ext = file.name.split('.').pop()?.toLowerCase();
+      let extractedText = '';
+      let sentImage = false;
+
+      if (type.startsWith('image/')) {
         // Convert image to base64 JPEG and send as video frame
         const base64 = await new Promise<string>((resolve) => {
           const reader = new FileReader();
@@ -1381,8 +1386,6 @@ function MaximusAgent({
               const canvas = document.createElement('canvas');
               const ctx = canvas.getContext('2d');
               if (!ctx) return resolve('');
-              
-              // Resize for Gemini Live API (max 640x480)
               let width = img.width;
               let height = img.height;
               if (width > 640 || height > 480) {
@@ -1399,17 +1402,51 @@ function MaximusAgent({
           };
           reader.readAsDataURL(file);
         });
-        if (base64) sendVideoToLive(base64);
-      } else if (file.type === 'text/plain') {
-        const text = await file.text();
-        sendTextToLive(`[Attached file: ${file.name}]\n${text}`);
-      } else {
-        sendTextToLive(`[User attached a file: ${file.name} (${file.type}, ${Math.round(file.size / 1024)}KB)]`);
+        if (base64) {
+          sendVideoToLive(base64);
+          sentImage = true;
+        }
+        // OCR: extract text from image
+        try {
+          const { extractTextFromImage } = await import('@/src/lib/fileProcessor');
+          extractedText = await extractTextFromImage(file);
+        } catch {
+          // OCR unavailable
+        }
+      } else if (type === 'text/plain' || ext === 'txt' || ext === 'csv' || ext === 'json' || ext === 'md') {
+        extractedText = await file.text();
+      } else if (type === 'application/pdf' || ext === 'pdf') {
+        try {
+          const { extractTextFromPDF } = await import('@/src/lib/fileProcessor');
+          extractedText = await extractTextFromPDF(file);
+        } catch {
+          extractedText = '';
+        }
+      } else if (
+        type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
+        ext === 'docx'
+      ) {
+        try {
+          const { extractTextFromDocx } = await import('@/src/lib/fileProcessor');
+          extractedText = await extractTextFromDocx(file);
+        } catch {
+          extractedText = '';
+        }
       }
 
-      // 3. Save to Supabase messages
+      // 3. Send extracted content to Gemini
+      const lines: string[] = [`[User attached file: ${file.name}]`];
+      if (sentImage) lines.push(`[Image sent to Beatrice for visual analysis]`);
+      if (extractedText) {
+        const preview = extractedText.slice(0, 4000);
+        lines.push(`[Extracted content]:\n${preview}`);
+        if (extractedText.length > 4000) lines.push(`[Content truncated, ${extractedText.length - 4000} more chars]`);
+      }
+      sendTextToLive(lines.join('\n'));
+
+      // 4. Save to Supabase messages
       const messageText = `Attached file: ${file.name}`;
-      setMessages(prev => [...prev, { role: 'user', text: messageText, timestamp: new Date().toISOString(), sessionId: sessionIdRef.current }]);
+      setMessages(prev => [...prev, { role: 'user', text: messageText, timestamp: new Date().toISOString(), sessionId: sessionIdRef.current, attachmentUrl: publicUrl, attachmentName: file.name }]);
       await saveMessage('user', messageText, publicUrl, file.name);
 
     } catch (err) {
