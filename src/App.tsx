@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { auth } from './firebase';
-import { signInWithPopup, GoogleAuthProvider, onAuthStateChanged, User, signOut, createUserWithEmailAndPassword, signInWithEmailAndPassword, sendPasswordResetEmail, updateProfile } from 'firebase/auth';
+import { signInWithRedirect, getRedirectResult, GoogleAuthProvider, onAuthStateChanged, User, signOut, createUserWithEmailAndPassword, signInWithEmailAndPassword, sendPasswordResetEmail, updateProfile } from 'firebase/auth';
 import { supabase, handleDbError } from './lib/supabase';
 import type { RealtimeChannel } from '@supabase/supabase-js';
 import { GoogleGenAI, LiveServerMessage, Modality, Type, FunctionDeclaration } from '@google/genai';
@@ -456,6 +456,18 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    getRedirectResult(auth).then((result) => {
+      if (result) {
+        const credential = GoogleAuthProvider.credentialFromResult(result);
+        if (credential?.accessToken) {
+          setGoogleToken(credential.accessToken);
+          storeToken(credential.accessToken, result.user.uid);
+        }
+      }
+    }).catch(console.error);
+  }, []);
+
+  useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
       setUser(u);
 
@@ -522,13 +534,7 @@ export default function App() {
         access_type: 'offline'
       });
 
-      const result = await signInWithPopup(auth, provider);
-      const credential = GoogleAuthProvider.credentialFromResult(result);
-
-      if (credential?.accessToken) {
-        setGoogleToken(credential.accessToken);
-        storeToken(credential.accessToken, result.user.uid);
-      }
+      await signInWithRedirect(auth, provider);
     } catch (error) {
       console.error("Login failed:", error);
     }
